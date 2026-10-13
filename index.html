@@ -1,40 +1,170 @@
 <!doctype html>
 <html lang="it"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Luci arbitro</title>
 <style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:#111;color:#fff;font-family:sans-serif}
-body{display:flex;flex-direction:column}
-#info{padding:12px;text-align:center;font-weight:bold;font-size:20px}
-button{flex:1;border:6px solid #111;font-size:14vw;font-weight:bold}
-#W{background:#fff;color:#000}#R{background:#d00;color:#fff}
-.sel{border-color:#0f0}
+body{display:flex;flex-direction:column;transition:background .2s}
+body.done{background:#0a7a2f}
+#top{padding:8px 10px 4px;text-align:center}
+#who{font-weight:bold;font-size:16px;opacity:.8}
+#msg{font-weight:bold;font-size:22px;min-height:30px;margin:4px 0}
+#row{display:flex;gap:8px;justify-content:center;padding:4px 10px 10px}
+.ref{flex:1;max-width:120px;border:2px solid #555;border-radius:10px;padding:6px 2px;font-size:12px;font-weight:bold;text-align:center}
+.ref b{display:block;font-size:26px;line-height:34px}
+.ref.me{border-color:#4af}
+.ref.ok{border-color:#0f0}
+#btns{flex:1;display:flex;flex-direction:column;min-height:0}
+button{flex:1;border:0;border-top:6px solid #111;font-size:14vw;font-weight:bold;position:relative}
+#W{background:#fff;color:#000}
+#R{background:#d00;color:#fff}
+button:disabled{opacity:.25}
+button.mine:disabled{opacity:1}
+button.mine::after{content:"✓ TUO VOTO";position:absolute;right:12px;top:10px;font-size:16px;background:#000;color:#0f0;padding:4px 8px;border-radius:6px}
+button:not(:disabled):active{filter:brightness(.8)}
+#conn{position:fixed;left:8px;top:8px;width:10px;height:10px;border-radius:50%;background:#d00}
 </style></head><body>
-<div id="info"></div>
-<button id="W">BIANCA</button>
-<button id="R">ROSSA</button>
+<div id="conn"></div>
+<div id="top">
+  <div id="who"></div>
+  <div id="msg"></div>
+</div>
+<div id="row">
+  <div class="ref" id="s-left">SX<b>·</b></div>
+  <div class="ref" id="s-head">CENTRO<b>·</b></div>
+  <div class="ref" id="s-right">DX<b>·</b></div>
+</div>
+<div id="btns">
+  <button id="W">BIANCA</button>
+  <button id="R">ROSSA</button>
+</div>
 <script>
-// Il codice segreto NON è scritto qui: arriva dal link (parte dopo il #)
+// Il codice segreto arriva dal link (parte dopo il #), non è scritto qui
 const TOPIC = decodeURIComponent(location.hash.slice(1));
 const ref = new URLSearchParams(location.search).get('r');
 const names = {left:'SINISTRO', head:'CENTRALE', right:'DESTRO'};
-const info = document.getElementById('info');
+const $ = id => document.getElementById(id);
 
-if (!names[ref]) info.textContent = 'Link errato: manca ?r=left|head|right';
-else if (!TOPIC) info.textContent = 'Link errato: manca il codice';
-else info.textContent = 'Arbitro ' + names[ref];
+const SAFETY_UNLOCK_MS = 90000; // sblocco di sicurezza se gli altri non votano mai
 
-async function vote(c){
+let votes = {};      // voti dei tre arbitri (arrivano da ntfy)
+let own = null;      // il mio voto: se presente, i pulsanti sono bloccati
+let state = 'ready'; // ready | waiting | all | done
+let tFire = null, tReset = null, tSafety = null;
+let sending = false;
+
+const sym = v => v === 'W' ? '⚪' : v === 'R' ? '🔴' : '·';
+
+function render() {
+  ['left','head','right'].forEach(r => {
+    const el = $('s-' + r);
+    el.querySelector('b').textContent = sym(votes[r]);
+    el.classList.toggle('ok', !!votes[r]);
+    el.classList.toggle('me', r === ref);
+  });
+  const locked = own !== null;
+  $('W').disabled = locked;
+  $('R').disabled = locked;
+  $('W').classList.toggle('mine', own === 'W');
+  $('R').classList.toggle('mine', own === 'R');
+  document.body.classList.toggle('done', state === 'done');
+  $('msg').textContent = {
+    ready:   'PRONTO · vota',
+    waiting: 'Voto inviato · attendo gli altri',
+    all:     'Tutti hanno votato…',
+    done:    '✓ LUCI INVIATE'
+  }[state];
+}
+
+function fullReset() {
+  clearTimeout(tFire); clearTimeout(tReset); clearTimeout(tSafety);
+  votes = {}; own = null; state = 'ready'; sending = false;
+  render();
+}
+
+function onVote(r, c) {
+  if (!['left','head','right'].includes(r) || !['W','R'].includes(c)) return;
+  if (state === 'done') fullReset();   // nuova alzata: riparto da zero
+  votes[r] = c;
+  clearTimeout(tFire);
+  if (votes.left && votes.head && votes.right) {
+    state = 'all';
+    render();
+    // stessa attesa dello script sul PC (1,5 s), poi conferma e reset
+    tFire = setTimeout(() => {
+      state = 'done';
+      render();
+      tReset = setTimeout(fullReset, 3000);
+    }, 1500);
+  } else {
+    state = own ? 'waiting' : 'ready';
+    render();
+  }
+}
+
+async function vote(c) {
   if (!names[ref] || !TOPIC) return;
-  try{
+  if (own !== null || sending) return;     // voto già dato: bloccato
+  sending = true;
+  try {
     const r = await fetch('https://ntfy.sh/' + encodeURIComponent(TOPIC), {method:'POST', body: ref + ':' + c});
     if (!r.ok) throw 0;
     if (navigator.vibrate) navigator.vibrate(100);
-    info.textContent = 'Inviato: ' + (c==='W' ? 'BIANCA' : 'ROSSA') + ' ✓';
-    ['W','R'].forEach(x => document.getElementById(x).classList.toggle('sel', x===c));
-  }catch(e){
-    info.textContent = '⚠ NON INVIATO, riprova';
+    own = c;
+    sending = false;
+    clearTimeout(tSafety);
+    tSafety = setTimeout(fullReset, SAFETY_UNLOCK_MS);
+    if (votes[ref] !== c) onVote(ref, c);
+    else { if (state === 'ready') state = 'waiting'; render(); }
+  } catch (e) {
+    sending = false;
+    $('msg').textContent = '⚠ NON INVIATO, riprova';
   }
 }
-['W','R'].forEach(x => document.getElementById(x).onclick = () => vote(x));
+$('W').onclick = () => vote('W');
+$('R').onclick = () => vote('R');
+
+// Ascolto dei voti degli altri arbitri
+let lastId = null;
+async function listen() {
+  try {
+    const url = 'https://ntfy.sh/' + encodeURIComponent(TOPIC) + '/json' + (lastId ? '?since=' + lastId : '');
+    const resp = await fetch(url);
+    $('conn').style.background = '#0a0';
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        try {
+          const j = JSON.parse(line);
+          if (j.event === 'message') {
+            lastId = j.id;
+            const [r, c] = String(j.message).trim().split(':');
+            if (!(r === ref && votes[r] === c)) onVote(r, c);
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  $('conn').style.background = '#d00';
+  setTimeout(listen, 2000);
+}
+
+if (!names[ref]) $('who').textContent = 'Link errato: manca ?r=left|head|right';
+else if (!TOPIC) $('who').textContent = 'Link errato: manca il codice';
+else { $('who').textContent = 'Arbitro ' + names[ref]; listen(); }
+render();
+
+// Al ritorno sulla pagina (telefono sbloccato): se la votazione era conclusa, riparto pulito
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && (state === 'done' || state === 'all')) fullReset();
+});
 </script></body></html>
