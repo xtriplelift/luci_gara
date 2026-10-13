@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Luci arbitro</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#fff;font-family:sans-serif}
+body{display:flex;flex-direction:column}
+#info{padding:12px;text-align:center;font-weight:bold;font-size:20px}
+button{flex:1;border:6px solid #111;font-size:14vw;font-weight:bold}
+#W{background:#fff;color:#000}#R{background:#d00;color:#fff}
+.sel{border-color:#0f0}
+</style></head><body>
+<div id="info"></div>
+<button id="W">BIANCA</button>
+<button id="R">ROSSA</button>
+<script>
+// Il codice segreto NON è scritto qui: arriva dal link (parte dopo il #)
+const TOPIC = decodeURIComponent(location.hash.slice(1));
+const ref = new URLSearchParams(location.search).get('r');
+const names = {left:'SINISTRO', head:'CENTRALE', right:'DESTRO'};
+const info = document.getElementById('info');
+
+if (!names[ref]) info.textContent = 'Link errato: manca ?r=left|head|right';
+else if (!TOPIC) info.textContent = 'Link errato: manca il codice';
+else info.textContent = 'Arbitro ' + names[ref];
+
+async function vote(c){
+  if (!names[ref] || !TOPIC) return;
+  try{
+    const r = await fetch('https://ntfy.sh/' + encodeURIComponent(TOPIC), {method:'POST', body: ref + ':' + c});
+    if (!r.ok) throw 0;
+    if (navigator.vibrate) navigator.vibrate(100);
+    info.textContent = 'Inviato: ' + (c==='W' ? 'BIANCA' : 'ROSSA') + ' ✓';
+    ['W','R'].forEach(x => document.getElementById(x).classList.toggle('sel', x===c));
+  }catch(e){
+    info.textContent = '⚠ NON INVIATO, riprova';
+  }
+}
+['W','R'].forEach(x => document.getElementById(x).onclick = () => vote(x));
+</script></body></html>
