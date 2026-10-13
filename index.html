@@ -43,7 +43,8 @@ button:not(:disabled):active{filter:brightness(.8)}
 // Il codice segreto arriva dal link (parte dopo il #), non è scritto qui
 const TOPIC = decodeURIComponent(location.hash.slice(1));
 const ref = new URLSearchParams(location.search).get('r');
-const names = {left:'SINISTRO', head:'CENTRALE', right:'DESTRO'};
+const names = {left:'SINISTRO', head:'CENTRALE', right:'DESTRO', all:'MASTER · 3 LUCI'};
+const myRefs = ref === 'all' ? ['left','head','right'] : [ref]; // luci che comanda questa pagina
 const $ = id => document.getElementById(id);
 
 const SAFETY_UNLOCK_MS = 90000; // sblocco di sicurezza se gli altri non votano mai
@@ -61,7 +62,7 @@ function render() {
     const el = $('s-' + r);
     el.querySelector('b').textContent = sym(votes[r]);
     el.classList.toggle('ok', !!votes[r]);
-    el.classList.toggle('me', r === ref);
+    el.classList.toggle('me', myRefs.includes(r));
   });
   const locked = own !== null;
   $('W').disabled = locked;
@@ -108,15 +109,18 @@ async function vote(c) {
   if (own !== null || sending) return;     // voto già dato: bloccato
   sending = true;
   try {
-    const r = await fetch('https://ntfy.sh/' + encodeURIComponent(TOPIC), {method:'POST', body: ref + ':' + c});
-    if (!r.ok) throw 0;
+    const results = await Promise.all(myRefs.map(async rr => {
+      const r = await fetch('https://ntfy.sh/' + encodeURIComponent(TOPIC), {method:'POST', body: rr + ':' + c});
+      if (!r.ok) throw 0;
+    }));
     if (navigator.vibrate) navigator.vibrate(100);
     own = c;
     sending = false;
     clearTimeout(tSafety);
     tSafety = setTimeout(fullReset, SAFETY_UNLOCK_MS);
-    if (votes[ref] !== c) onVote(ref, c);
-    else { if (state === 'ready') state = 'waiting'; render(); }
+    myRefs.forEach(rr => { if (votes[rr] !== c) onVote(rr, c); });
+    if (state === 'ready') state = 'waiting';
+    render();
   } catch (e) {
     sending = false;
     $('msg').textContent = '⚠ NON INVIATO, riprova';
@@ -148,7 +152,7 @@ async function listen() {
           if (j.event === 'message') {
             lastId = j.id;
             const [r, c] = String(j.message).trim().split(':');
-            if (!(r === ref && votes[r] === c)) onVote(r, c);
+            if (!(myRefs.includes(r) && votes[r] === c)) onVote(r, c);
           }
         } catch (e) {}
       }
@@ -160,7 +164,7 @@ async function listen() {
 
 if (!names[ref]) $('who').textContent = 'Link errato: manca ?r=left|head|right';
 else if (!TOPIC) $('who').textContent = 'Link errato: manca il codice';
-else { $('who').textContent = 'Arbitro ' + names[ref]; listen(); }
+else { $('who').textContent = ref === 'all' ? names.all : 'Arbitro ' + names[ref]; listen(); }
 render();
 
 // Al ritorno sulla pagina (telefono sbloccato): se la votazione era conclusa, riparto pulito
